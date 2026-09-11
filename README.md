@@ -161,6 +161,9 @@ for service in QMTDiscovery(token="...").discover():
 注意：
 - `server_config.json` 是本地环境文件，不应提交到仓库。
 - 示例里的 `_comments` 字段只作说明，服务端只读取已知键，会忽略它。
+- 示例是「局域网开箱即用」取向：`bind_host: 0.0.0.0`、`allowed_hosts: ["*"]`、`discovery_enabled: true`，且
+  `auth_token` 只是占位符 `auth_token`（发现密钥由它派生）。**上线前务必替换 `auth_token`**；
+  要保留 Host 防护就把 `allowed_hosts` 改成客户端实际使用的 `IP:端口` 列表，或把 `discovery_secret` 设为独立密钥。
 - 当前代码会热加载 `server_config.json`，修改后无需重启 Python 进程即可生效。
 
 ## 鉴权
