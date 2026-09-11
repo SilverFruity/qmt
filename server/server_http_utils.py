@@ -83,7 +83,12 @@ def is_request_authorized(request, configured_auth_token, normalize_auth_token):
 
 
 def is_host_allowed(request, allowed_hosts):
-    """Reject requests whose Host header is not a loopback name, blocking DNS rebinding."""
+    """Reject requests whose Host header is not in the allowlist (DNS rebinding).
+
+    An allowlist containing '*' disables the check entirely.
+    """
+    if '*' in allowed_hosts:
+        return True
     host = (request['headers'].get('host') or '').strip().lower()
     if not host:
         return False

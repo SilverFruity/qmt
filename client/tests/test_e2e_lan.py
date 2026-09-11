@@ -81,6 +81,22 @@ def test_configured_extra_allowed_host():
         server.stop()
 
 
+def test_wildcard_allowed_hosts_disables_check():
+    FakeQMTServer = _load_fake_qmt_server()
+    server = FakeQMTServer(token="lan-token", port=0, allowed_hosts=["*"]).start()
+    try:
+        response = _raw_http(server.port, "/health", {
+            "Host": "anything.example",
+            "Authorization": "Bearer lan-token",
+        })
+        assert response.startswith("HTTP/1.1 200")
+
+        response = _raw_http(server.port, "/docs", {"Host": "another.example"})
+        assert response.startswith("HTTP/1.1 200")
+    finally:
+        server.stop()
+
+
 def test_bind_host_and_port_come_from_config():
     FakeQMTServer = _load_fake_qmt_server()
     server = FakeQMTServer(token="lan-token", port=0).start()

@@ -180,7 +180,9 @@ for service in QMTDiscovery(token="...").discover():
 
 ### 其他访问控制
 - **Host 白名单**：默认只接受 `127.0.0.1[:18080]` / `localhost[:18080]`；可用 `allowed_hosts` 扩展，
-  其他 Host 返回 `403 {"error":"host_not_allowed"}`，用于阻断 DNS rebinding
+  其他 Host 返回 `403 {"error":"host_not_allowed"}`，用于阻断 DNS rebinding。
+  设为 `["*"]`（或 `["any"]`）可**完全关闭**该检查——会失去 DNS rebinding 防护，只在完全可信网络里用；
+  `/health` 的 `host_check_enabled` 会显示当前是否生效
 - **不返回任何 CORS 头**（`CORS_ALLOW_ORIGIN = ''`）：唯一调用方是同机的 Django 后端，
   不需要浏览器跨域；一旦返回 `Access-Control-Allow-Origin: *`，本机浏览器打开的任意
   网页都能读账户并调用 `/order`

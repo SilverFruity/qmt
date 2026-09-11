@@ -712,6 +712,9 @@ def _build_allowed_hosts(configured, bind_host, bind_port):
     Explicit configured entries come first; loopback forms and the bound host are
     always included so local health checks keep working. With a wildcard bind
     (0.0.0.0) the LAN address must be listed explicitly in allowed_hosts.
+
+    A configured value of '*' or 'any' disables the check entirely (the list
+    collapses to ['*']); this gives up DNS rebinding protection.
     """
     hosts = []
     if isinstance(configured, (list, tuple)):
@@ -720,10 +723,16 @@ def _build_allowed_hosts(configured, bind_host, bind_port):
         values = [configured]
     else:
         values = []
+    wildcard = False
     for value in values:
         text = str(value or '').strip().lower()
+        if text in ('*', 'any'):
+            wildcard = True
+            continue
         if text and text not in hosts:
             hosts.append(text)
+    if wildcard:
+        return ['*']
     bind_names = [] if bind_host in (None, '', '0.0.0.0', '::') else [bind_host]
     for name in bind_names + ['127.0.0.1', 'localhost']:
         for candidate in ('%s:%s' % (name, bind_port), name):
@@ -1285,6 +1294,7 @@ def _build_health_payload():
         'bind_host': RUNTIME.state['bind_host'],
         'bind_port': RUNTIME.state['bind_port'],
         'allowed_hosts': RUNTIME.state['allowed_hosts'],
+        'host_check_enabled': '*' not in (RUNTIME.state.get('allowed_hosts') or []),
         'discovery_enabled': RUNTIME.state['discovery_enabled'],
         'discovery_port': RUNTIME.state['discovery_port'],
         'discovery_ready': RUNTIME.state['discovery_ready'],
@@ -2203,6 +2213,9 @@ def _ensure_http_listener():
         RUNTIME.state['http_port'] = actual_port
         RUNTIME.state['listener_ready'] = True
         _log('http listener ready at http://%s:%s' % (bind_host, actual_port))
+        if '*' in (RUNTIME.state.get('allowed_hosts') or []):
+            _log('WARNING: allowed_hosts is "*"; Host allowlist disabled, '
+                 'DNS rebinding protection is off')
         if bind_host not in ('127.0.0.1', 'localhost'):
             _log('listener bound to non-loopback host; traffic is plaintext and '
                  'allowed_hosts must list the LAN address clients use')
