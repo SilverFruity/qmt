@@ -121,7 +121,7 @@ def _error_responses():
     }
 
 
-def _op(tag, summary, parameters=None, schema=None, description='成功', security=None):
+def _op(tag, summary, parameters=None, schema=None, description='成功', security=None, op_description=None):
     responses = {'200': _json_ok(description, schema)}
     responses.update(_error_responses())
     operation = {
@@ -130,6 +130,8 @@ def _op(tag, summary, parameters=None, schema=None, description='成功', securi
         'parameters': parameters or [],
         'responses': responses,
     }
+    if op_description:
+        operation['description'] = op_description
     if security is not None:
         operation['security'] = security
     return operation
@@ -177,16 +179,16 @@ def _paths():
             _q('remark', '备注', STRING),
             _q('batch_id', '调用方批次号，用于串联', STRING),
             _q('source', '调用来源标识', STRING),
-        ], schema=_ref('OrderSubmitResult'))},
+        ], schema=_ref('OrderSubmitResult'), op_description='仅在 QMT 实盘运行下真正报单：回测模式只记录虚拟买卖点，模拟运行模式下交易函数无效。status=submitted 只表示 passorder 未抛异常，是否受理请看 /orders 与 /deals。')},
         '/cancel': {'get': _op('交易', '撤销单笔委托（非幂等）', [
             _q('order_id', '委托号，即 /orders 的 order_sys_id（QMT m_strOrderSysID）', STRING, required=True),
             _q('order_sys_id', 'order_id 的别名', STRING),
             _q('account_type', '账号类型，默认取运行时配置', STRING),
-        ], schema=_ref('CancelResult'))},
+        ], schema=_ref('CancelResult'), op_description='order_id 用 /orders 返回的 order_sys_id（QMT m_strOrderSysID）。回测模式下取消委托无实际意义。')},
         '/can-cancel': {'get': _op('交易', '查询委托是否可撤销', [
             _q('order_id', '委托号，即 /orders 的 order_sys_id', STRING, required=True),
             _q('account_type', '账号类型，默认取运行时配置', STRING),
-        ], schema=_ref('CanCancelResult'))},
+        ], schema=_ref('CanCancelResult'), op_description='回测模式下该查询无实际意义。')},
 
         '/candles': {'get': _op('数据', '单个标的 K 线', [
             _q('symbol', '标的代码', SYMBOL, required=True),

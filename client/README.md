@@ -129,6 +129,9 @@ result = client.place_order(
 )
 ~~~
 
+注意：@@/order@@ 只在 QMT **实盘运行**下真正报单——回测模式只记虚拟买卖点，模拟模式交易函数无效；
+@@status=submitted@@ 仅表示 @@passorder@@ 未抛异常。它是有副作用的非幂等请求，客户端不会自动重试。
+
 ### 撤单
 
 ~~~python

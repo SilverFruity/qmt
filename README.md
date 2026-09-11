@@ -299,9 +299,12 @@ python3 export_openapi.py > openapi.json
 - `GET /can-cancel?order_id=...`：查询委托是否可撤销，返回 `can_cancel` 布尔值
 
 说明：
-- `/order` 已实现请求入口，不再属于“计划中未实现”功能。
-- `/cancel` 与 `/order` 一样受每分钟次数限制；撤销结果里的 `signaled` 表示是否已发出撤销信号。
-- 是否能成功下单仍取决于 QMT 环境、账户上下文和参数合法性。
+- **运行模式决定一切**：`/order`、`/cancel`、`/can-cancel` 只在 QMT **实盘运行**下有意义。
+  **回测模式**中交易函数调用虚拟账号、只在历史 K 线上记买卖点，`/order` 不会产生真实委托，`/cancel`/`/can-cancel` 无实际意义；
+  **模拟运行模式下交易函数无效**。
+- `status: submitted` 只代表 `passorder` 未抛异常，**不代表柜台已受理**；是否成功以 `/orders`、`/deals` 为准。
+- `/cancel` 与 `/order` 一样受每分钟次数限制；`signaled` 表示是否已发出撤销信号；`order_id` 用 `/orders` 返回的 `order_sys_id`。
+- 服务端在 `server_tick`（`run_time` 定时器）里调用 `passorder`，不在 `handlebar` 内；`quickTrade` 当前为 `1`，可能被 QMT 视为无效信号，API 驱动下单建议改为 `2`。
 
 ### K 线、标的信息与期权
 - `GET /candles?symbol=000300.SH&period=1d&count=240`：K 线
