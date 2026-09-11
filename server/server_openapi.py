@@ -179,7 +179,7 @@ def _paths():
             _q('remark', '备注', STRING),
             _q('batch_id', '调用方批次号，用于串联', STRING),
             _q('source', '调用来源标识', STRING),
-        ], schema=_ref('OrderSubmitResult'), op_description='仅在 QMT 实盘运行下真正报单：回测模式只记录虚拟买卖点，模拟运行模式下交易函数无效。status=submitted 只表示 passorder 未抛异常，是否受理请看 /orders 与 /deals。')},
+        ], schema=_ref('OrderSubmitResult'), op_description='仅在 QMT 实盘运行下报单；服务端使用 quickTrade=2（不判断 bar 状态），实盘下调用即触发报单。回测模式只记录虚拟买卖点，模拟运行模式下交易函数无效。status=submitted 只表示 passorder 未抛异常，是否受理请看 /orders 与 /deals。')},
         '/cancel': {'get': _op('交易', '撤销单笔委托（非幂等）', [
             _q('order_id', '委托号，即 /orders 的 order_sys_id（QMT m_strOrderSysID）', STRING, required=True),
             _q('order_sys_id', 'order_id 的别名', STRING),

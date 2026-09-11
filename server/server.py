@@ -1707,9 +1707,12 @@ def _submit_stock_order(symbol, side, price, volume, remark, batch_id, source, p
         'deal_info': _make_jsonable(RUNTIME.state.get('deal_info')),
         'last_error': _make_jsonable(RUNTIME.state.get('last_error')),
     }
+    # quickTrade=2: do not gate on bar state. Orders arrive from the HTTP/timer
+    # thread (not handlebar), so 0/1 could be treated as an invalid signal and
+    # dropped; 2 makes the call fire immediately in live trading.
     args_variants = [
-        (op_type, 1101, str(account_id), normalized_symbol, normalized_price_type, normalized_price, normalized_volume, strategy_name, 1, user_order_id, context),
-        (op_type, 1101, str(account_id), normalized_symbol, normalized_price_type, normalized_price, normalized_volume, strategy_name, 1, context),
+        (op_type, 1101, str(account_id), normalized_symbol, normalized_price_type, normalized_price, normalized_volume, strategy_name, 2, user_order_id, context),
+        (op_type, 1101, str(account_id), normalized_symbol, normalized_price_type, normalized_price, normalized_volume, strategy_name, 2, context),
         (op_type, 1101, str(account_id), normalized_symbol, normalized_price_type, normalized_price, normalized_volume, context),
     ]
     result, signature_error, arg_count = _call_with_fallbacks(passorder_func, args_variants)
