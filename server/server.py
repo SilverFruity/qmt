@@ -39,6 +39,12 @@ from server_market_utils import (
     normalize_market_time as market_normalize_market_time,
     normalize_number as market_normalize_number,
 )
+from server_discovery import (
+    DEFAULT_MAX_SKEW_SECONDS as DISCOVERY_MAX_SKEW_SECONDS,
+    build_response as discovery_build_response,
+    derive_secret as discovery_derive_secret,
+    verify_probe as discovery_verify_probe,
+)
 from server_openapi import (
     build_openapi_spec as openapi_build_spec,
     build_swagger_ui_html as openapi_build_swagger_ui_html,
@@ -67,6 +73,8 @@ RUNTIME_MODULE_NAME = 'qmt_live_runtime'
 HTTP_SERVER_VERSION = 8
 HTTP_HOST = '127.0.0.1'
 HTTP_PORT = 18080
+DEFAULT_DISCOVERY_PORT = 18081
+MAX_DISCOVERY_READS_PER_TICK = 8
 TIMER_CALLBACK_NAME = 'server_tick'
 HTTP_TIMER_PERIOD = '10nMilliSecond'
 HTTP_TIMER_START_TIME = '2000-01-01 00:00:00'
@@ -135,6 +143,15 @@ def _create_runtime():
         'bind_host': HTTP_HOST,
         'bind_port': HTTP_PORT,
         'allowed_hosts': list(ALLOWED_HTTP_HOSTS),
+        'discovery_enabled': False,
+        'discovery_port': DEFAULT_DISCOVERY_PORT,
+        'bound_discovery_port': None,
+        'discovery_ready': False,
+        'discovery_probe_count': 0,
+        'last_discovery_at': None,
+        'configured_discovery_secret': None,
+        'configured_discovery_secret_source': None,
+        'configured_discovery_port': None,
         'http_started_at': None,
         'http_mode': 'runtime_poll',
         'listener_ready': False,
@@ -731,6 +748,8 @@ def _load_runtime_config(context):
         RUNTIME.state['bind_host'] = HTTP_HOST
         RUNTIME.state['bind_port'] = HTTP_PORT
         RUNTIME.state['allowed_hosts'] = _build_allowed_hosts(None, HTTP_HOST, HTTP_PORT)
+        RUNTIME.state['discovery_enabled'] = False
+        RUNTIME.state['configured_discovery_secret'] = None
         return
     mtime = int(stat_result.st_mtime * 1000000)
     if RUNTIME.state['config_mtime'] == mtime:
@@ -760,6 +779,23 @@ def _load_runtime_config(context):
     RUNTIME.state['bind_host'] = bind_host
     RUNTIME.state['bind_port'] = bind_port
     RUNTIME.state['allowed_hosts'] = _build_allowed_hosts(payload.get('allowed_hosts'), bind_host, bind_port)
+    configured_discovery_secret = _normalize_auth_token(payload.get('discovery_secret'))
+    configured_discovery_port = _normalize_bind_port(payload.get('discovery_port'))
+    discovery_flag = _normalize_bool_flag(payload.get('discovery_enabled'))
+    secret_source = 'explicit' if configured_discovery_secret is not None else None
+    if configured_discovery_secret is None and discovery_flag is True:
+        # Derive from auth_token so only one secret needs provisioning.
+        configured_discovery_secret = discovery_derive_secret(configured_auth_token)
+        if configured_discovery_secret is not None:
+            secret_source = 'derived'
+        else:
+            _log('discovery_enabled=true but no discovery_secret and no auth_token to derive from')
+    RUNTIME.state['configured_discovery_secret'] = configured_discovery_secret
+    RUNTIME.state['configured_discovery_secret_source'] = secret_source if configured_discovery_secret else None
+    RUNTIME.state['configured_discovery_port'] = configured_discovery_port
+    # Fail-closed: without a secret (explicit or derived) discovery stays off.
+    RUNTIME.state['discovery_enabled'] = configured_discovery_secret is not None and discovery_flag is not False
+    RUNTIME.state['discovery_port'] = configured_discovery_port if configured_discovery_port is not None else DEFAULT_DISCOVERY_PORT
     if configured_account_id in (None, ''):
         RUNTIME.state['configured_account_id'] = None
         RUNTIME.state['configured_account_type'] = None
@@ -1249,6 +1285,12 @@ def _build_health_payload():
         'bind_host': RUNTIME.state['bind_host'],
         'bind_port': RUNTIME.state['bind_port'],
         'allowed_hosts': RUNTIME.state['allowed_hosts'],
+        'discovery_enabled': RUNTIME.state['discovery_enabled'],
+        'discovery_port': RUNTIME.state['discovery_port'],
+        'discovery_ready': RUNTIME.state['discovery_ready'],
+        'discovery_probe_count': RUNTIME.state['discovery_probe_count'],
+        'configured_discovery_port': RUNTIME.state['configured_discovery_port'],
+        'discovery_secret_source': RUNTIME.state['configured_discovery_secret_source'],
         'http_started_at': RUNTIME.state['http_started_at'],
         'listener_ready': RUNTIME.state['listener_ready'],
         'timer_registered': RUNTIME.state['timer_registered'],
@@ -2058,23 +2100,112 @@ def _reset_listener():
     RUNTIME.state['listener_ready'] = False
 
 
+def _reset_discovery():
+    sock = getattr(RUNTIME, 'discovery_socket', None)
+    if sock is not None:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    RUNTIME.discovery_socket = None
+    RUNTIME.state['discovery_ready'] = False
+    RUNTIME.state['bound_discovery_port'] = None
+
+
+def _ensure_discovery_socket():
+    enabled = bool(RUNTIME.state.get('discovery_enabled'))
+    desired_port = RUNTIME.state.get('discovery_port') or DEFAULT_DISCOVERY_PORT
+    sock = getattr(RUNTIME, 'discovery_socket', None)
+    if (sock is not None and RUNTIME.state.get('discovery_ready')
+            and RUNTIME.state.get('bound_discovery_port') == desired_port):
+        return
+    _reset_discovery()
+    if not enabled:
+        return
+    try:
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        except Exception:
+            pass
+        udp.bind(('', desired_port))
+        udp.setblocking(False)
+        actual_port = udp.getsockname()[1]
+        RUNTIME.discovery_socket = udp
+        RUNTIME.state['bound_discovery_port'] = actual_port
+        RUNTIME.state['discovery_port'] = actual_port
+        RUNTIME.state['discovery_ready'] = True
+        _log('discovery listener ready on udp/%s' % actual_port)
+    except Exception:
+        RUNTIME.state['last_error_at'] = _now()
+        RUNTIME.state['last_error'] = traceback.format_exc()
+        RUNTIME.state['discovery_ready'] = False
+        _log('discovery listener start failed\n%s' % RUNTIME.state['last_error'])
+
+
+def _poll_discovery():
+    sock = getattr(RUNTIME, 'discovery_socket', None)
+    secret = RUNTIME.state.get('configured_discovery_secret')
+    if sock is None or not secret or not RUNTIME.state.get('listener_ready'):
+        return
+    bind_host = RUNTIME.state.get('bind_host') or HTTP_HOST
+    http_port = RUNTIME.state.get('http_port') or HTTP_PORT
+    account_type = RUNTIME.state.get('account_type') or ''
+    for _ in range(MAX_DISCOVERY_READS_PER_TICK):
+        try:
+            data, address = sock.recvfrom(4096)
+        except BlockingIOError:
+            return
+        except Exception:
+            _record_error('_poll_discovery')
+            return
+        try:
+            payload = json.loads(data.decode('utf-8', 'replace'))
+        except Exception:
+            continue
+        probe = discovery_verify_probe(payload, secret, _now(), DISCOVERY_MAX_SKEW_SECONDS)
+        if probe is None:
+            continue
+        response = discovery_build_response(bind_host, http_port, account_type, probe['nonce'], _now(), secret)
+        try:
+            sock.sendto(json.dumps(response, ensure_ascii=False).encode('utf-8'), address)
+        except Exception:
+            _record_error('_poll_discovery')
+            continue
+        RUNTIME.state['discovery_probe_count'] = int(RUNTIME.state.get('discovery_probe_count') or 0) + 1
+        RUNTIME.state['last_discovery_at'] = _now()
+
+
 def _ensure_http_listener():
-    if RUNTIME.listener is not None and RUNTIME.state.get('server_version') == HTTP_SERVER_VERSION:
+    bind_host = RUNTIME.state.get('bind_host') or HTTP_HOST
+    bind_port = RUNTIME.state.get('bind_port')
+    if bind_port is None:
+        bind_port = HTTP_PORT
+    current = (RUNTIME.state.get('http_host'), RUNTIME.state.get('http_port'))
+    if (RUNTIME.listener is not None
+            and current == (bind_host, bind_port)
+            and RUNTIME.state.get('server_version') == HTTP_SERVER_VERSION):
         return
     _reset_listener()
     try:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((HTTP_HOST, HTTP_PORT))
+        listener.bind((bind_host, bind_port))
         listener.listen(128)
         listener.setblocking(False)
+        actual_port = listener.getsockname()[1]
         RUNTIME.listener = listener
         RUNTIME.state['server_version'] = HTTP_SERVER_VERSION
+        RUNTIME.state['bind_port'] = actual_port
         RUNTIME.state['http_started_at'] = _now()
-        RUNTIME.state['http_host'] = HTTP_HOST
-        RUNTIME.state['http_port'] = HTTP_PORT
+        RUNTIME.state['http_host'] = bind_host
+        RUNTIME.state['http_port'] = actual_port
         RUNTIME.state['listener_ready'] = True
-        _log('http listener ready at http://%s:%s' % (HTTP_HOST, HTTP_PORT))
+        _log('http listener ready at http://%s:%s' % (bind_host, actual_port))
+        if bind_host not in ('127.0.0.1', 'localhost'):
+            _log('listener bound to non-loopback host; traffic is plaintext and '
+                 'allowed_hosts must list the LAN address clients use')
     except Exception:
         RUNTIME.state['last_error_at'] = _now()
         RUNTIME.state['last_error'] = traceback.format_exc()
@@ -2141,11 +2272,13 @@ def _run_server_tick(ContextInfo):
     _ensure_http_listener()
     if RUNTIME.listener is None:
         return
+    _ensure_discovery_socket()
     RUNTIME.state['last_http_poll_at'] = _now()
     _accept_new_clients()
     _poll_clients()
     _push_ws_updates()
     _poll_clients()
+    _poll_discovery()
 
 
 def on_event(event_name, *args):
@@ -2191,6 +2324,7 @@ def stop(ContextInfo):
     _update_context(ContextInfo)
     _clear_quote_subscriptions(ContextInfo)
     _reset_listener()
+    _reset_discovery()
     RUNTIME.context_ref = None
     RUNTIME.state['timer_registered'] = False
     RUNTIME.state['timer_callback'] = TIMER_CALLBACK_NAME

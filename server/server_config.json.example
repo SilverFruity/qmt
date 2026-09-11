@@ -1,13 +1,26 @@
 {
+  "_comments": [
+    "account_id：账户号；留空则尝试从 ContextInfo 自动识别。account_type 默认 STOCK。",
+    "auth_token：必填。服务端 fail-closed，为空时拒绝所有请求；请把占位符换成自己的强 token。",
+    "bind_host / bind_port：监听地址，默认 127.0.0.1:18080；局域网改为网卡 IP 或 0.0.0.0。",
+    "allowed_hosts：Host 头白名单（防 DNS rebinding）；局域网必须包含客户端使用的 'IP:端口' 或主机名。",
+    "discovery_enabled：true 时启用 HMAC 签名的 UDP 发现。discovery_secret 留空则从 auth_token 派生（HMAC-SHA256(auth_token,'qmt-discovery-v1')），填了就使用显式密钥以便单独轮换。",
+    "discovery_port：UDP 发现端口，默认 18081。",
+    "quote_symbols / quote_period / quote_dividend_type：启动时自动订阅的行情。",
+    "服务端只读取已知键，本 _comments 字段会被忽略，仅作说明。"
+  ],
   "account_id": "your-account-id",
   "account_type": "STOCK",
-  "auth_token": "replace-with-a-strong-token-never-leave-empty",
-  "bind_host": "127.0.0.1",
+  "auth_token": "auth_token",
+  "bind_host": "0.0.0.0",
   "bind_port": 18080,
   "allowed_hosts": [
     "127.0.0.1:18080",
     "localhost:18080"
   ],
+  "discovery_enabled": false,
+  "discovery_port": 18081,
+  "discovery_secret": "",
   "quote_symbols": [
     "600000.SH"
   ],

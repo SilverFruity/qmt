@@ -297,6 +297,10 @@ def _components():
                     'allowed_hosts': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Host 头白名单'},
                     'configured_bind_host': {'type': 'string', 'nullable': True},
                     'configured_bind_port': {'type': 'integer', 'nullable': True},
+                    'discovery_enabled': {'type': 'boolean', 'description': '是否启用签名 UDP 发现'},
+                    'discovery_port': {'type': 'integer', 'nullable': True},
+                    'discovery_ready': {'type': 'boolean'},
+                    'discovery_probe_count': {'type': 'integer'},
                     'config_path': {'type': 'string'},
                     'position_count': {'type': 'integer'},
                     'order_snapshot_count': {'type': 'integer'},
@@ -450,6 +454,9 @@ def build_openapi_spec():
                 '监听地址与 Host 白名单通过 server_config.json 的 bind_host / bind_port / '
                 'allowed_hosts 配置，默认仅回环。若绑定到局域网地址，请把客户端使用的 IP/主机名 '
                 '加入 allowed_hosts；该场景下传输为明文 HTTP，仅适合可信内网，建议加防火墙或前置 TLS 代理。'
+                '局域网发现为 HMAC 签名的 UDP 主动探测（client 发 probe、server 单播应答），'
+                '在 server_config.json 设置 discovery_enabled 后启用；discovery_secret 留空时从 auth_token 派生。'
+                '发现不暴露为 HTTP 端点。'
             ),
         },
         'servers': [{'url': SERVER_BASE_URL, 'description': '本地 QMT 服务'}],

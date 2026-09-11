@@ -5,6 +5,7 @@ import types
 def create_runtime(runtime_module_name, initial_state):
     runtime = types.ModuleType(runtime_module_name)
     runtime.listener = None
+    runtime.discovery_socket = None
     runtime.context_ref = None
     runtime.clients = {}
     runtime.position_index = {}
@@ -34,7 +35,7 @@ def upgrade_runtime(runtime, defaults):
             old_http_thread.join(2.0)
         except Exception:
             pass
-    for name in ['listener', 'context_ref', 'clients', 'position_index', 'order_index', 'deal_index', 'quote_subscriptions', 'latest_quotes', 'quote_sequence']:
+    for name in ['listener', 'discovery_socket', 'context_ref', 'clients', 'position_index', 'order_index', 'deal_index', 'quote_subscriptions', 'latest_quotes', 'quote_sequence']:
         if not hasattr(runtime, name):
             setattr(runtime, name, getattr(defaults, name))
     state = getattr(runtime, 'state', None)
