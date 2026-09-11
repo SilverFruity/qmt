@@ -93,6 +93,8 @@ ALLOWED_HTTP_HOSTS = (
 MAX_ORDER_NOTIONAL = 200000.0
 MAX_ORDER_VOLUME = 100000
 MAX_ORDERS_PER_MINUTE = 30
+# Cancels cannot move money, but a runaway loop should still be bounded.
+MAX_CANCELS_PER_MINUTE = 60
 SERVER_CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'server_config.json')
 CONTEXT_ACCOUNT_METHOD_CANDIDATES = [
     'get_account',
@@ -181,6 +183,10 @@ def _create_runtime():
         'recent_order_times': [],
         'last_order_reject_at': None,
         'last_order_reject_reason': None,
+        'recent_cancel_times': [],
+        'last_cancel_at': None,
+        'last_cancel_reject_at': None,
+        'last_cancel_reject_reason': None,
         'server_version': HTTP_SERVER_VERSION,
     })
 
@@ -1189,6 +1195,11 @@ def _build_health_payload():
         'orders_in_last_minute': len(_prune_recent_order_times(_now())),
         'last_order_reject_at': RUNTIME.state['last_order_reject_at'],
         'last_order_reject_reason': RUNTIME.state['last_order_reject_reason'],
+        'max_cancels_per_minute': MAX_CANCELS_PER_MINUTE,
+        'cancels_in_last_minute': len(_prune_recent_cancel_times(_now())),
+        'last_cancel_at': RUNTIME.state['last_cancel_at'],
+        'last_cancel_reject_at': RUNTIME.state['last_cancel_reject_at'],
+        'last_cancel_reject_reason': RUNTIME.state['last_cancel_reject_reason'],
         'init_count': RUNTIME.state['init_count'],
         'handlebar_count': RUNTIME.state['handlebar_count'],
         'last_init_at': RUNTIME.state['last_init_at'],
@@ -1342,11 +1353,11 @@ def _build_accounts_payload():
     }
 
 
-def _call_passorder_with_fallbacks(passorder_func, args_variants):
+def _call_with_fallbacks(func, args_variants):
     last_exc = None
     for args in args_variants:
         try:
-            return passorder_func(*args), None, len(args)
+            return func(*args), None, len(args)
         except TypeError as exc:
             last_exc = exc
             continue
@@ -1398,6 +1409,145 @@ def _get_passorder_callable(context):
     return None
 
 
+def _get_cancel_callable(context):
+    func = globals().get('cancel')
+    if callable(func):
+        return func
+    func = getattr(context, 'cancel', None)
+    if callable(func):
+        return func
+    return None
+
+
+def _get_can_cancel_callable(context):
+    func = globals().get('can_cancel_order')
+    if callable(func):
+        return func
+    func = getattr(context, 'can_cancel_order', None)
+    if callable(func):
+        return func
+    return None
+
+
+def _prune_recent_cancel_times(now):
+    recent = [item for item in RUNTIME.state.get('recent_cancel_times') or [] if now - item < 60.0]
+    RUNTIME.state['recent_cancel_times'] = recent
+    return recent
+
+
+def _check_cancel_guardrails():
+    recent = _prune_recent_cancel_times(_now())
+    if len(recent) >= MAX_CANCELS_PER_MINUTE:
+        RUNTIME.state['last_cancel_reject_at'] = _now()
+        RUNTIME.state['last_cancel_reject_reason'] = 'cancel_rate_limited'
+        _log('cancel rejected reason=cancel_rate_limited count=%s' % len(recent))
+        return {
+            'error': 'cancel_rate_limited',
+            'detail': '%s cancels in the last minute exceeds cap %s' % (len(recent), MAX_CANCELS_PER_MINUTE),
+        }
+    return None
+
+
+def _cancel_account_type(account_type):
+    return (
+        _normalize_account_type(account_type)
+        or RUNTIME.state.get('account_type')
+        or DEFAULT_ACCOUNT_TYPE
+    )
+
+
+def _submit_cancel_order(order_id, account_type=None):
+    """Cancel one live order.
+
+    The id QMT expects is the 委托号 (m_strOrderSysID), exposed by /orders as
+    order_sys_id. /cancel and /can-cancel accept order_id or order_sys_id.
+    """
+    context = RUNTIME.context_ref
+    if context is None:
+        return {'error': 'context_unavailable'}
+    normalized_order_id = str(order_id or '').strip()
+    if not normalized_order_id:
+        return {'error': 'order_id_required'}
+    account_id = RUNTIME.state.get('account_id')
+    if account_id in (None, ''):
+        return {'error': 'account_unavailable'}
+    cancel_func = _get_cancel_callable(context)
+    if cancel_func is None:
+        return {'error': 'cancel_unavailable'}
+    guardrail_error = _check_cancel_guardrails()
+    if guardrail_error is not None:
+        return guardrail_error
+    normalized_account_type = _cancel_account_type(account_type)
+    args_variants = [
+        (normalized_order_id, str(account_id), normalized_account_type, context),
+        (normalized_order_id, str(account_id), normalized_account_type),
+        (normalized_order_id, str(account_id), context),
+    ]
+    try:
+        result, signature_error, arg_count = _call_with_fallbacks(cancel_func, args_variants)
+    except Exception:
+        _record_error('_submit_cancel_order')
+        return {'error': 'cancel_failed', 'order_id': normalized_order_id}
+    if signature_error is not None:
+        return {
+            'error': 'cancel_signature_error',
+            'detail': str(signature_error),
+            'order_id': normalized_order_id,
+        }
+    requested_at = _now()
+    RUNTIME.state['recent_cancel_times'] = _prune_recent_cancel_times(requested_at) + [requested_at]
+    RUNTIME.state['last_cancel_at'] = requested_at
+    return {
+        'status': 'cancel_requested',
+        'order_id': normalized_order_id,
+        'account_id': str(account_id),
+        'account_type': normalized_account_type,
+        'signaled': bool(result) if result is not None else None,
+        'cancel_result': _make_jsonable(result),
+        'cancel_args_count': arg_count,
+        'requested_at': requested_at,
+    }
+
+
+def _check_can_cancel(order_id, account_type=None):
+    context = RUNTIME.context_ref
+    if context is None:
+        return {'error': 'context_unavailable'}
+    normalized_order_id = str(order_id or '').strip()
+    if not normalized_order_id:
+        return {'error': 'order_id_required'}
+    account_id = RUNTIME.state.get('account_id')
+    if account_id in (None, ''):
+        return {'error': 'account_unavailable'}
+    can_cancel_func = _get_can_cancel_callable(context)
+    if can_cancel_func is None:
+        return {'error': 'can_cancel_order_unavailable'}
+    normalized_account_type = _cancel_account_type(account_type)
+    args_variants = [
+        (normalized_order_id, str(account_id), normalized_account_type),
+        (normalized_order_id, str(account_id), normalized_account_type, context),
+    ]
+    try:
+        result, signature_error, arg_count = _call_with_fallbacks(can_cancel_func, args_variants)
+    except Exception:
+        _record_error('_check_can_cancel')
+        return {'error': 'can_cancel_order_failed', 'order_id': normalized_order_id}
+    if signature_error is not None:
+        return {
+            'error': 'can_cancel_order_signature_error',
+            'detail': str(signature_error),
+            'order_id': normalized_order_id,
+        }
+    return {
+        'order_id': normalized_order_id,
+        'account_id': str(account_id),
+        'account_type': normalized_account_type,
+        'can_cancel': bool(result),
+        'raw': _make_jsonable(result),
+        'checked_at': _now(),
+    }
+
+
 def _submit_stock_order(symbol, side, price, volume, remark, batch_id, source, price_type=None):
     normalized_symbol = _normalize_quote_symbol(symbol)
     normalized_side = _normalize_trade_side(side)
@@ -1440,7 +1590,7 @@ def _submit_stock_order(symbol, side, price, volume, remark, batch_id, source, p
         (op_type, 1101, str(account_id), normalized_symbol, normalized_price_type, normalized_price, normalized_volume, strategy_name, 1, context),
         (op_type, 1101, str(account_id), normalized_symbol, normalized_price_type, normalized_price, normalized_volume, context),
     ]
-    result, signature_error, arg_count = _call_passorder_with_fallbacks(passorder_func, args_variants)
+    result, signature_error, arg_count = _call_with_fallbacks(passorder_func, args_variants)
     if signature_error is not None:
         return {
             'error': 'passorder_signature_error',
@@ -1585,7 +1735,7 @@ def _build_http_response(request_bytes):
                     '/health', '/positions', '/accounts', '/quotes', '/quote',
                     '/orders', '/deals', '/subscribe', '/unsubscribe', '/candles', '/candles-bulk', '/signals', '/instrument',
                     '/divid-factors', '/instrument-bulk', '/turnover-rate', '/total-share', '/trading-dates', '/sector',
-                    '/options', '/option-trade-options', '/longhubang', '/order', '/ws', '/debug/trade',
+                    '/options', '/option-trade-options', '/longhubang', '/order', '/cancel', '/can-cancel', '/ws', '/debug/trade',
                 ],
             })
         if path == '/health':
@@ -1756,6 +1906,20 @@ def _build_http_response(request_bytes):
             batch_id = (query.get('batch_id') or [''])[0]
             source = (query.get('source') or [''])[0]
             payload = _submit_stock_order(symbol, side, price, volume, remark, batch_id, source, price_type)
+            if payload.get('error'):
+                return _build_json_response(400, payload)
+            return _build_json_response(200, payload)
+        if path == '/cancel':
+            order_id = (query.get('order_id') or query.get('order_sys_id') or [None])[0]
+            account_type = (query.get('account_type') or [None])[0]
+            payload = _submit_cancel_order(order_id, account_type)
+            if payload.get('error'):
+                return _build_json_response(400, payload)
+            return _build_json_response(200, payload)
+        if path == '/can-cancel':
+            order_id = (query.get('order_id') or query.get('order_sys_id') or [None])[0]
+            account_type = (query.get('account_type') or [None])[0]
+            payload = _check_can_cancel(order_id, account_type)
             if payload.get('error'):
                 return _build_json_response(400, payload)
             return _build_json_response(200, payload)
