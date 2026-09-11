@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qmt-client"
+version = "0.1.0"
+description = "Python client for the QMT local HTTP/WebSocket trading server"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "QMT" }]
+dependencies = [
+    "requests>=2.25",
+    "websocket-client>=1.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+qmt-discover = "qmt_client.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+qmt_client = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
