@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from server_http_utils import (
     build_forbidden_host_response as http_build_forbidden_host_response,
+    build_html_response as http_build_html_response,
     build_json_response as http_build_json_response,
     build_unauthorized_response as http_build_unauthorized_response,
     build_websocket_handshake_response as http_build_websocket_handshake_response,
@@ -37,6 +38,10 @@ from server_market_utils import (
     normalize_int as market_normalize_int,
     normalize_market_time as market_normalize_market_time,
     normalize_number as market_normalize_number,
+)
+from server_openapi import (
+    build_openapi_spec as openapi_build_spec,
+    build_swagger_ui_html as openapi_build_swagger_ui_html,
 )
 from server_runtime_utils import (
     create_runtime as runtime_create_runtime,
@@ -1651,6 +1656,16 @@ def _build_json_response(status_code, payload, extra_headers=None):
     )
 
 
+def _build_html_response(status_code, html_text):
+    return http_build_html_response(status_code, html_text)
+
+
+def _build_docs_response(path):
+    if path == '/openapi.json':
+        return _build_json_response(200, openapi_build_spec())
+    return _build_html_response(200, openapi_build_swagger_ui_html())
+
+
 def _extract_request_token(headers):
     return http_extract_request_token(headers, _normalize_auth_token)
 
@@ -1717,6 +1732,12 @@ def _build_http_response(request_bytes):
             return _build_forbidden_host_response()
         if request['method'] == 'OPTIONS':
             return _build_json_response(200, {'status': 'ok'})
+        # /docs and /openapi.json stay public so a browser can load Swagger UI;
+        # the Host whitelist still applies and no account data is exposed.
+        if request['method'] == 'GET':
+            public_path = urlparse(request['target']).path or '/'
+            if public_path in ('/docs', '/openapi.json'):
+                return _build_docs_response(public_path)
         authorized, _ = _is_request_authorized(request)
         if not authorized:
             return _build_unauthorized_response()
@@ -1732,10 +1753,11 @@ def _build_http_response(request_bytes):
                 'name': 'qmt-position-server',
                 'mode': 'runtime_poll',
                 'endpoints': [
-                    '/health', '/positions', '/accounts', '/quotes', '/quote',
+                    '/', '/health', '/positions', '/accounts', '/quotes', '/quote',
                     '/orders', '/deals', '/subscribe', '/unsubscribe', '/candles', '/candles-bulk', '/signals', '/instrument',
                     '/divid-factors', '/instrument-bulk', '/turnover-rate', '/total-share', '/trading-dates', '/sector',
                     '/options', '/option-trade-options', '/longhubang', '/order', '/cancel', '/can-cancel', '/ws', '/debug/trade',
+                    '/openapi.json', '/docs',
                 ],
             })
         if path == '/health':

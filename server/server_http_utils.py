@@ -201,3 +201,20 @@ def queue_client_response(client, payload_bytes):
         return
     client['response_bytes'] = payload_bytes
     client['response_offset'] = 0
+
+
+def build_html_response(status_code, html_text, extra_headers=None):
+    reason_map = {200: 'OK', 404: 'Not Found', 500: 'Internal Server Error'}
+    body = html_text.encode('utf-8')
+    header_lines = [
+        'HTTP/1.1 %s %s' % (status_code, reason_map.get(status_code, 'OK')),
+        'Content-Type: text/html; charset=utf-8',
+        'Content-Length: %s' % len(body),
+        'Connection: close',
+        'Cache-Control: no-store',
+    ]
+    if extra_headers:
+        header_lines.extend(extra_headers)
+    header_lines.extend(['', ''])
+    return '\r\n'.join(header_lines).encode('utf-8') + body
+
