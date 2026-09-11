@@ -132,6 +132,9 @@ def _create_runtime():
         'handlebar_count': 0,
         'http_host': HTTP_HOST,
         'http_port': HTTP_PORT,
+        'bind_host': HTTP_HOST,
+        'bind_port': HTTP_PORT,
+        'allowed_hosts': list(ALLOWED_HTTP_HOSTS),
         'http_started_at': None,
         'http_mode': 'runtime_poll',
         'listener_ready': False,
@@ -179,6 +182,9 @@ def _create_runtime():
         'configured_account_type': None,
         'auth_enabled': False,
         'configured_auth_token': None,
+        'configured_bind_host': None,
+        'configured_bind_port': None,
+        'configured_allowed_hosts': [],
         'configured_quote_symbols': [],
         'manual_quote_symbols': [],
         'quote_period': DEFAULT_QUOTE_PERIOD,
@@ -669,6 +675,47 @@ def _apply_context_account_subscription(context):
         _record_error('_apply_context_account_subscription')
 
 
+def _normalize_bind_host(value):
+    if value in (None, ''):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_bind_port(value):
+    port = _normalize_int(value)
+    if port is None or port < 0 or port > 65535:
+        return None
+    return int(port)
+
+
+def _build_allowed_hosts(configured, bind_host, bind_port):
+    """Host header allowlist used to block DNS rebinding.
+
+    Explicit configured entries come first; loopback forms and the bound host are
+    always included so local health checks keep working. With a wildcard bind
+    (0.0.0.0) the LAN address must be listed explicitly in allowed_hosts.
+    """
+    hosts = []
+    if isinstance(configured, (list, tuple)):
+        values = list(configured)
+    elif configured:
+        values = [configured]
+    else:
+        values = []
+    for value in values:
+        text = str(value or '').strip().lower()
+        if text and text not in hosts:
+            hosts.append(text)
+    bind_names = [] if bind_host in (None, '', '0.0.0.0', '::') else [bind_host]
+    for name in bind_names + ['127.0.0.1', 'localhost']:
+        for candidate in ('%s:%s' % (name, bind_port), name):
+            text = str(candidate).strip().lower()
+            if text and text not in hosts:
+                hosts.append(text)
+    return hosts
+
+
 def _load_runtime_config(context):
     now = _now()
     last_config_load_at = RUNTIME.state['last_config_load_at']
@@ -681,6 +728,9 @@ def _load_runtime_config(context):
         RUNTIME.state['config_mtime'] = None
         RUNTIME.state['configured_account_id'] = None
         RUNTIME.state['configured_account_type'] = None
+        RUNTIME.state['bind_host'] = HTTP_HOST
+        RUNTIME.state['bind_port'] = HTTP_PORT
+        RUNTIME.state['allowed_hosts'] = _build_allowed_hosts(None, HTTP_HOST, HTTP_PORT)
         return
     mtime = int(stat_result.st_mtime * 1000000)
     if RUNTIME.state['config_mtime'] == mtime:
@@ -700,6 +750,16 @@ def _load_runtime_config(context):
     RUNTIME.state['quote_dividend_type'] = str(payload.get('quote_dividend_type') or DEFAULT_QUOTE_DIVIDEND_TYPE)
     RUNTIME.state['configured_auth_token'] = configured_auth_token
     RUNTIME.state['auth_enabled'] = configured_auth_token is not None
+    configured_bind_host = _normalize_bind_host(payload.get('bind_host'))
+    configured_bind_port = _normalize_bind_port(payload.get('bind_port'))
+    RUNTIME.state['configured_bind_host'] = configured_bind_host
+    RUNTIME.state['configured_bind_port'] = configured_bind_port
+    RUNTIME.state['configured_allowed_hosts'] = list(payload.get('allowed_hosts') or [])
+    bind_host = configured_bind_host or HTTP_HOST
+    bind_port = configured_bind_port if configured_bind_port is not None else HTTP_PORT
+    RUNTIME.state['bind_host'] = bind_host
+    RUNTIME.state['bind_port'] = bind_port
+    RUNTIME.state['allowed_hosts'] = _build_allowed_hosts(payload.get('allowed_hosts'), bind_host, bind_port)
     if configured_account_id in (None, ''):
         RUNTIME.state['configured_account_id'] = None
         RUNTIME.state['configured_account_type'] = None
@@ -1186,6 +1246,9 @@ def _build_health_payload():
         'http_mode': RUNTIME.state['http_mode'],
         'http_host': RUNTIME.state['http_host'],
         'http_port': RUNTIME.state['http_port'],
+        'bind_host': RUNTIME.state['bind_host'],
+        'bind_port': RUNTIME.state['bind_port'],
+        'allowed_hosts': RUNTIME.state['allowed_hosts'],
         'http_started_at': RUNTIME.state['http_started_at'],
         'listener_ready': RUNTIME.state['listener_ready'],
         'timer_registered': RUNTIME.state['timer_registered'],
@@ -1227,6 +1290,8 @@ def _build_health_payload():
         'account_source': RUNTIME.state['account_source'],
         'configured_account_id': RUNTIME.state['configured_account_id'],
         'configured_account_type': RUNTIME.state['configured_account_type'],
+        'configured_bind_host': RUNTIME.state['configured_bind_host'],
+        'configured_bind_port': RUNTIME.state['configured_bind_port'],
         'config_path': RUNTIME.state['config_path'],
         'account_snapshot_count': RUNTIME.state['account_snapshot_count'],
         'order_snapshot_count': RUNTIME.state['order_snapshot_count'],
@@ -1675,7 +1740,8 @@ def _is_request_authorized(request):
 
 
 def _is_host_allowed(request):
-    return http_is_host_allowed(request, ALLOWED_HTTP_HOSTS)
+    allowed_hosts = RUNTIME.state.get('allowed_hosts') or ALLOWED_HTTP_HOSTS
+    return http_is_host_allowed(request, allowed_hosts)
 
 
 def _build_unauthorized_response():
@@ -1698,7 +1764,7 @@ def _build_websocket_handshake_response(request):
         _normalize_auth_token,
         CORS_ALLOW_HEADERS,
         CORS_ALLOW_METHODS,
-        ALLOWED_HTTP_HOSTS,
+        RUNTIME.state.get('allowed_hosts') or ALLOWED_HTTP_HOSTS,
         CORS_ALLOW_ORIGIN,
     )
 

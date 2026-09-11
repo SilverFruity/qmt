@@ -10,7 +10,9 @@ import os
 
 API_TITLE = 'QMT HTTP / WebSocket 服务'
 API_VERSION = '1.0.0'
-SERVER_BASE_URL = 'http://127.0.0.1:18080'
+# Relative so Swagger UI targets whatever host the page was opened from
+# (loopback or a LAN address); absolute would break Try it out over LAN.
+SERVER_BASE_URL = '/'
 SWAGGER_UI_ASSET_BASE = os.environ.get('QMT_SWAGGER_UI_BASE') or 'https://unpkg.com/swagger-ui-dist@5'
 
 _JSON = 'application/json'
@@ -290,6 +292,11 @@ def _components():
                     'account_id': {'type': 'string', 'nullable': True},
                     'account_type': {'type': 'string', 'nullable': True},
                     'account_source': {'type': 'string', 'nullable': True},
+                    'bind_host': {'type': 'string', 'description': '实际绑定地址，默认 127.0.0.1'},
+                    'bind_port': {'type': 'integer', 'description': '实际监听端口'},
+                    'allowed_hosts': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Host 头白名单'},
+                    'configured_bind_host': {'type': 'string', 'nullable': True},
+                    'configured_bind_port': {'type': 'integer', 'nullable': True},
                     'config_path': {'type': 'string'},
                     'position_count': {'type': 'integer'},
                     'order_snapshot_count': {'type': 'integer'},
@@ -440,6 +447,9 @@ def build_openapi_spec():
                 '（fail-closed），只接受 127.0.0.1 / localhost 的 Host。'
                 'WebSocket 行情推送位于 GET /ws（101 升级，推送类型 quote_snapshot），'
                 'OpenAPI 无法表达，请使用客户端的 QuoteStream。'
+                '监听地址与 Host 白名单通过 server_config.json 的 bind_host / bind_port / '
+                'allowed_hosts 配置，默认仅回环。若绑定到局域网地址，请把客户端使用的 IP/主机名 '
+                '加入 allowed_hosts；该场景下传输为明文 HTTP，仅适合可信内网，建议加防火墙或前置 TLS 代理。'
             ),
         },
         'servers': [{'url': SERVER_BASE_URL, 'description': '本地 QMT 服务'}],
